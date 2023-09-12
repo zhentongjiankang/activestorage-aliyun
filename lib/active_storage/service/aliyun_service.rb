@@ -22,7 +22,7 @@ module ActiveStorage
     def upload(key, io, checksum: nil, content_type: nil, disposition: nil, filename: nil, custom_metadata: {}, **)
       instrument :upload, key: key, checksum: checksum do
         content_type ||= Marcel::MimeType.for(io)
-        bucket.put_object(path_for(key), content_type: content_type, metas: custom_metadata) do |stream|
+        api_bucket.put_object(path_for(key), content_type: content_type, metas: custom_metadata) do |stream|
           stream << io.read(CHUNK_SIZE) until io.eof?
         end
       end
@@ -31,12 +31,12 @@ module ActiveStorage
     def download(key, &block)
       if block
         instrument :streaming_download, key: key do
-          bucket.get_object(path_for(key), &block)
+          api_bucket.get_object(path_for(key), &block)
         end
       else
         instrument :download, key: key do
           chunk_buff = []
-          bucket.get_object(path_for(key)) do |chunk|
+          api_bucket.get_object(path_for(key)) do |chunk|
             chunk_buff << chunk
           end
           chunk_buff.join
@@ -48,7 +48,7 @@ module ActiveStorage
       instrument :download_chunk, key: key, range: range do
         chunk_buff = []
         range_end = range.exclude_end? ? range.end : range.end + 1
-        bucket.get_object(path_for(key), range: [range.begin, range_end]) do |chunk|
+        api_bucket.get_object(path_for(key), range: [range.begin, range_end]) do |chunk|
           chunk_buff << chunk
         end
         chunk_buff.join
@@ -57,25 +57,25 @@ module ActiveStorage
 
     def delete(key)
       instrument :delete, key: key do
-        bucket.delete_object(path_for(key))
+        api_bucket.delete_object(path_for(key))
       end
     end
 
     def delete_prefixed(prefix)
       instrument :delete_prefixed, prefix: prefix do
-        files = bucket.list_objects(prefix: path_for(prefix))
+        files = api_bucket.list_objects(prefix: path_for(prefix))
         return if files.blank?
 
         keys = files.map(&:key)
         return if keys.blank?
 
-        bucket.batch_delete_objects(keys, quiet: true)
+        api_bucket.batch_delete_objects(keys, quiet: true)
       end
     end
 
     def exist?(key)
       instrument :exist, key: key do |_payload|
-        bucket.object_exists?(path_for(key))
+        api_bucket.object_exists?(path_for(key))
       end
     end
 
@@ -195,6 +195,13 @@ module ActiveStorage
       @bucket
     end
 
+    def api_bucket
+      return @api_bucket if defined? @api_bucket
+
+      @api_bucket = api_client.get_bucket(config.fetch(:bucket))
+      @api_bucket
+    end
+
     def authorization(key, content_type, checksum, date)
       filename = File.expand_path("/#{bucket.name}/#{path_for(key)}")
       addition_headers = "x-oss-date:#{date}"
@@ -207,9 +214,22 @@ module ActiveStorage
       config.fetch(:endpoint, "https://oss-cn-hangzhou.aliyuncs.com")
     end
 
+    def api_endpoint
+      config.fetch(:api_endpoint) || endpoint
+    end
+
     def client
       @client ||= Aliyun::OSS::Client.new(
         endpoint: endpoint,
+        access_key_id: config.fetch(:access_key_id),
+        access_key_secret: config.fetch(:access_key_secret),
+        cname: config.fetch(:cname, false)
+      )
+    end
+
+    def api_client
+      @api_client ||= Aliyun::OSS::Client.new(
+        endpoint: api_endpoint,
         access_key_id: config.fetch(:access_key_id),
         access_key_secret: config.fetch(:access_key_secret),
         cname: config.fetch(:cname, false)
